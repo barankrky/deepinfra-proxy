@@ -1,0 +1,27 @@
+package utils
+
+import (
+	"encoding/json"
+	"net/http"
+
+	"deepinfra-wrapper/types"
+)
+
+func SendErrorResponse(w http.ResponseWriter, message, errorType string, statusCode int, errorCode ...string) {
+	code := ""
+	if len(errorCode) > 0 {
+		code = errorCode[0]
+	}
+	
+	errorResponse := types.OpenAIErrorResponse{
+		Error: types.OpenAIErrorDetail{
+			Message: message,
+			Type:    errorType,
+			Code:    code,
+		},
+	}
+	
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(statusCode)
+	json.NewEncoder(w).Encode(errorResponse)
+}
