@@ -17,7 +17,6 @@ import (
 	"time"
 
 	"deepinfra-wrapper/services"
-	"deepinfra-wrapper/types"
 	"deepinfra-wrapper/utils"
 )
 
@@ -86,7 +85,7 @@ func ChatCompletionsHandler(w http.ResponseWriter, r *http.Request) {
 	r.Body.Close()
 	debugPayload("Incoming request body", bodyBytes)
 
-	var chatReq types.ChatCompletionRequest
+	var chatReq map[string]interface{}
 	err = json.Unmarshal(bodyBytes, &chatReq)
 	if err != nil {
 		fmt.Printf("❌ Failed to parse request: %v\n", err)
@@ -94,66 +93,13 @@ func ChatCompletionsHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	fmt.Printf("🤖 Model requested: %s\n", chatReq.Model)
+	model, _ := chatReq["model"].(string)
+	fmt.Printf("🤖 Model requested: %s\n", model)
 
-	if !services.IsModelSupported(chatReq.Model) {
-		fmt.Printf("❌ Unsupported model: %s\n", chatReq.Model)
+	if !services.IsModelSupported(model) {
+		fmt.Printf("❌ Unsupported model: %s\n", model)
 		utils.SendErrorResponse(w, "Unsupported model. Please use one of the supported models.", "invalid_request_error", http.StatusBadRequest, "model_not_found")
 		return
-	}
-
-	// Set default values if not provided
-	if chatReq.Temperature == 0 {
-		chatReq.Temperature = 0.7
-	}
-	if chatReq.MaxTokens == 0 {
-		chatReq.MaxTokens = 15000
-	}
-	if chatReq.TopP == 0 {
-		chatReq.TopP = 1.0
-	}
-
-	// Handle message content normalization
-	for i := range chatReq.Messages {
-		if chatReq.Messages[i].Role == "content" {
-			if contentStr, ok := chatReq.Messages[i].Content.(string); ok && contentStr == "user" {
-				chatReq.Messages[i].Role, chatReq.Messages[i].Content = contentStr, chatReq.Messages[i].Role
-			}
-		}
-
-		// Handle content that might be an array (for multimodal)
-		if contentArray, ok := chatReq.Messages[i].Content.([]interface{}); ok {
-			// Convert to string if it's a simple array with text
-			if len(contentArray) == 1 {
-				if textPart, ok := contentArray[0].(map[string]interface{}); ok {
-					if textType, ok := textPart["type"].(string); ok && textType == "text" {
-						if text, ok := textPart["text"].(string); ok {
-							chatReq.Messages[i].Content = text
-						}
-					}
-				}
-			}
-		}
-	}
-
-	// Handle response format for JSON mode
-	if chatReq.ResponseFormat != nil && chatReq.ResponseFormat.Type == "json_object" {
-		// Ensure system message instructs JSON output
-		hasSystemMessage := false
-		for _, msg := range chatReq.Messages {
-			if msg.Role == "system" {
-				hasSystemMessage = true
-				break
-			}
-		}
-		if !hasSystemMessage {
-			// Prepend system message to ensure JSON output
-			systemMessage := types.ChatMessage{
-				Role:    "system",
-				Content: "You are a helpful assistant that always responds with valid JSON objects.",
-			}
-			chatReq.Messages = append([]types.ChatMessage{systemMessage}, chatReq.Messages...)
-		}
 	}
 
 	data, err := json.Marshal(chatReq)
@@ -200,7 +146,7 @@ func ChatCompletionsHandler(w http.ResponseWriter, r *http.Request) {
 
 			fmt.Printf("🌐 Attempt %d: Using proxy %s\n", i+1, proxy)
 
-			result, err := sendChatRequest(ctx, proxy, services.DeepInfraBaseURL+services.ChatEndpoint, data, chatReq.Stream, w)
+			result, err := sendChatRequest(ctx, proxy, services.DeepInfraBaseURL+services.ChatEndpoint, data, true, w)
 			if err != nil {
 				fmt.Printf("❌ Proxy attempt %d failed: %v\n", i+1, err)
 				services.RemoveProxy(proxy)
@@ -260,13 +206,8 @@ func sendChatRequest(ctx context.Context, proxy, endpoint string, data []byte, i
 	debugText("Upstream response status", fmt.Sprintf("status=%d proxy=%s", resp.StatusCode, proxy))
 
 	if resp.StatusCode == http.StatusOK {
-		if isStream {
-			fmt.Println("📶 Handling streaming response")
-			return handleStreamResponse(w, resp)
-		} else {
-			fmt.Println("📄 Handling normal response")
-			return handleNormalResponse(w, resp)
-		}
+		fmt.Println("📶 Handling streaming response")
+		return handleStreamResponse(w, resp)
 	}
 
 	body, _ := io.ReadAll(resp.Body)
@@ -280,174 +221,18 @@ func handleStreamResponse(w http.ResponseWriter, resp *http.Response) (bool, err
 	w.Header().Set("Connection", "keep-alive")
 	w.WriteHeader(http.StatusOK)
 
-	responseID := generateID("chatcmpl-")
-	modelName := ""
-	scanner := bufio.NewScanner(resp.Body)
-	var buf bytes.Buffer
-	scanner.Buffer(make([]byte, 64*1024), 1024*1024)
-	chunkCount := 0
-	doneSent := false
-
 	flusher, ok := w.(http.Flusher)
 	if !ok {
 		return false, fmt.Errorf("response writer does not support flushing")
 	}
 
+	scanner := bufio.NewScanner(resp.Body)
+	scanner.Buffer(make([]byte, 64*1024), 1024*1024)
+
 	for scanner.Scan() {
 		line := scanner.Text()
-		if line == "" {
-			continue
-		}
-
-		var dataStr string
-		if strings.HasPrefix(line, "data: ") {
-			dataStr = strings.TrimPrefix(line, "data: ")
-		} else {
-			dataStr = line
-		}
-
-		if dataStr == "[DONE]" {
-			debugText("Stream inbound chunk", dataStr)
-			fmt.Fprintf(w, "data: [DONE]\n\n")
-			flusher.Flush()
-			chunkCount++
-			doneSent = true
-			continue
-		}
-
-		if chunkCount < 12 {
-			debugText("Stream inbound chunk", dataStr)
-		}
-
-		var streamChunk map[string]interface{}
-		if err := json.Unmarshal([]byte(dataStr), &streamChunk); err != nil {
-			fmt.Fprintf(w, "data: %s\n\n", dataStr)
-			flusher.Flush()
-			chunkCount++
-			continue
-		}
-
-		if model, ok := streamChunk["model"].(string); ok && model != "" {
-			modelName = model
-		}
-
-		normalizedChunk := types.ChatCompletionChunk{
-			ID:      responseID,
-			Object:  "chat.completion.chunk",
-			Created: time.Now().Unix(),
-			Model:   modelName,
-			Choices: []types.ChatCompletionChoice{},
-		}
-
-		if choices, ok := streamChunk["choices"].([]interface{}); ok {
-			for i, choiceRaw := range choices {
-				if choice, ok := choiceRaw.(map[string]interface{}); ok {
-					normalizedChoice := types.ChatCompletionChoice{
-						Index: i,
-					}
-
-					if deltaRaw, ok := choice["delta"].(map[string]interface{}); ok {
-						delta := &types.ChatCompletionDelta{}
-						if role, ok := deltaRaw["role"].(string); ok {
-							delta.Role = role
-						}
-						if content, ok := deltaRaw["content"].(string); ok {
-							delta.Content = content
-						}
-						if reasoningContent, exists := deltaRaw["reasoning_content"]; exists && reasoningContent != nil {
-							delta.ReasoningContent = reasoningContent
-						}
-						if functionCallRaw, ok := deltaRaw["function_call"].(map[string]interface{}); ok {
-							functionCall := &types.DeltaFunctionCall{}
-							if name, ok := functionCallRaw["name"].(string); ok {
-								nameCopy := name
-								functionCall.Name = &nameCopy
-							}
-							if arguments, ok := functionCallRaw["arguments"].(string); ok {
-								argumentsCopy := arguments
-								functionCall.Arguments = &argumentsCopy
-							}
-							if functionCall.Name != nil || functionCall.Arguments != nil {
-								delta.FunctionCall = functionCall
-							}
-						}
-						if toolCallsRaw, ok := deltaRaw["tool_calls"].([]interface{}); ok {
-							delta.ToolCalls = make([]types.DeltaToolCall, 0, len(toolCallsRaw))
-							for _, tcRaw := range toolCallsRaw {
-								tcMap, ok := tcRaw.(map[string]interface{})
-								if !ok {
-									continue
-								}
-
-								toolCall := types.DeltaToolCall{}
-								if idx, ok := tcMap["index"].(float64); ok {
-									idxInt := int(idx)
-									toolCall.Index = &idxInt
-								}
-								if id, ok := tcMap["id"].(string); ok {
-									idCopy := id
-									toolCall.ID = &idCopy
-								}
-								if tcType, ok := tcMap["type"].(string); ok {
-									typeCopy := tcType
-									toolCall.Type = &typeCopy
-								}
-								if fnRaw, ok := tcMap["function"].(map[string]interface{}); ok {
-									deltaFunction := &types.DeltaFunctionCall{}
-									if name, ok := fnRaw["name"].(string); ok {
-										nameCopy := name
-										deltaFunction.Name = &nameCopy
-									}
-									if arguments, ok := fnRaw["arguments"].(string); ok {
-										argumentsCopy := arguments
-										deltaFunction.Arguments = &argumentsCopy
-									}
-									if deltaFunction.Name != nil || deltaFunction.Arguments != nil {
-										toolCall.Function = deltaFunction
-									}
-								}
-
-								if toolCall.Index != nil || toolCall.ID != nil || toolCall.Type != nil || toolCall.Function != nil {
-									delta.ToolCalls = append(delta.ToolCalls, toolCall)
-								}
-							}
-							if len(delta.ToolCalls) == 0 {
-								delta.ToolCalls = nil
-							}
-						}
-						normalizedChoice.Delta = delta
-					} else if text, ok := choice["text"].(string); ok {
-						normalizedChoice.Delta = &types.ChatCompletionDelta{
-							Content: text,
-						}
-					}
-
-					if fr, ok := choice["finish_reason"].(string); ok {
-						normalizedChoice.FinishReason = fr
-					}
-
-					normalizedChunk.Choices = append(normalizedChunk.Choices, normalizedChoice)
-				}
-			}
-		}
-
-		chunkBytes, err := json.Marshal(normalizedChunk)
-		if err != nil {
-			fmt.Fprintf(w, "data: %s\n\n", dataStr)
-		} else {
-			if chunkCount < 12 {
-				debugPayload("Stream outbound chunk", chunkBytes)
-			}
-			fmt.Fprintf(w, "data: %s\n\n", string(chunkBytes))
-		}
+		fmt.Fprintf(w, "%s\n", line)
 		flusher.Flush()
-		chunkCount++
-	}
-
-	if !doneSent {
-		fmt.Fprintf(w, "data: [DONE]\n\n")
-		flusher.Flush()
-		chunkCount++
 	}
 
 	if err := scanner.Err(); err != nil {
@@ -455,140 +240,6 @@ func handleStreamResponse(w http.ResponseWriter, resp *http.Response) (bool, err
 		return false, err
 	}
 
-	fmt.Printf("✅ Stream complete, sent %d chunks\n", chunkCount)
-	buf.Reset()
-	return true, nil
-}
-
-func handleNormalResponse(w http.ResponseWriter, resp *http.Response) (bool, error) {
-	w.Header().Set("Content-Type", "application/json")
-
-	bodyBytes, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return false, fmt.Errorf("failed to read response body: %v", err)
-	}
-	debugPayload("Upstream normal response body", bodyBytes)
-
-	var deepInfraResp map[string]interface{}
-	if err := json.Unmarshal(bodyBytes, &deepInfraResp); err != nil {
-		return false, fmt.Errorf("failed to parse response: %v", err)
-	}
-
-	responseID := generateID("chatcmpl-")
-	choices := []types.ChatCompletionChoice{}
-
-	if choicesRaw, ok := deepInfraResp["choices"].([]interface{}); ok {
-		for i, choiceRaw := range choicesRaw {
-			if choice, ok := choiceRaw.(map[string]interface{}); ok {
-				finishReason := ""
-				if fr, ok := choice["finish_reason"].(string); ok {
-					finishReason = fr
-				}
-
-				message := &types.ChatMessage{}
-				if msgRaw, ok := choice["message"].(map[string]interface{}); ok {
-					if role, ok := msgRaw["role"].(string); ok {
-						message.Role = role
-					}
-					if content, ok := msgRaw["content"].(string); ok {
-						message.Content = content
-					}
-					if reasoningContent, exists := msgRaw["reasoning_content"]; exists && reasoningContent != nil {
-						message.ReasoningContent = reasoningContent
-					}
-					if functionCallRaw, ok := msgRaw["function_call"].(map[string]interface{}); ok {
-						functionCall := &types.FunctionCall{}
-						if name, ok := functionCallRaw["name"].(string); ok {
-							functionCall.Name = name
-						}
-						if arguments, ok := functionCallRaw["arguments"].(string); ok {
-							functionCall.Arguments = arguments
-						}
-						message.FunctionCall = functionCall
-					}
-					if toolCallsRaw, ok := msgRaw["tool_calls"].([]interface{}); ok {
-						message.ToolCalls = make([]types.ToolCall, 0, len(toolCallsRaw))
-						for _, tcRaw := range toolCallsRaw {
-							tcMap, ok := tcRaw.(map[string]interface{})
-							if !ok {
-								continue
-							}
-
-							toolCall := types.ToolCall{}
-							if idx, ok := tcMap["index"].(float64); ok {
-								idxInt := int(idx)
-								toolCall.Index = &idxInt
-							}
-							if id, ok := tcMap["id"].(string); ok {
-								toolCall.ID = id
-							}
-							if tcType, ok := tcMap["type"].(string); ok {
-								toolCall.Type = tcType
-							}
-							if fnRaw, ok := tcMap["function"].(map[string]interface{}); ok {
-								if name, ok := fnRaw["name"].(string); ok {
-									toolCall.Function.Name = name
-								}
-								if arguments, ok := fnRaw["arguments"].(string); ok {
-									toolCall.Function.Arguments = arguments
-								}
-							}
-
-							message.ToolCalls = append(message.ToolCalls, toolCall)
-						}
-					}
-				}
-
-				choices = append(choices, types.ChatCompletionChoice{
-					Index:        i,
-					Message:      message,
-					FinishReason: finishReason,
-				})
-			}
-		}
-	}
-
-	modelName := ""
-	if model, ok := deepInfraResp["model"].(string); ok {
-		modelName = model
-	}
-
-	var usage *types.ChatCompletionUsage
-	if usageRaw, ok := deepInfraResp["usage"].(map[string]interface{}); ok {
-		usage = &types.ChatCompletionUsage{}
-		if pt, ok := usageRaw["prompt_tokens"].(float64); ok {
-			usage.PromptTokens = int(pt)
-		}
-		if ct, ok := usageRaw["completion_tokens"].(float64); ok {
-			usage.CompletionTokens = int(ct)
-		}
-		if tt, ok := usageRaw["total_tokens"].(float64); ok {
-			usage.TotalTokens = int(tt)
-		}
-	}
-
-	openAIResp := types.ChatCompletionResponse{
-		ID:      responseID,
-		Object:  "chat.completion",
-		Created: time.Now().Unix(),
-		Model:   modelName,
-		Choices: choices,
-		Usage:   usage,
-	}
-
-	respBytes, err := json.Marshal(openAIResp)
-	if err != nil {
-		return false, fmt.Errorf("failed to marshal response: %v", err)
-	}
-	debugPayload("Client normal response body", respBytes)
-
-	w.WriteHeader(http.StatusOK)
-	_, err = w.Write(respBytes)
-	if err != nil {
-		fmt.Printf("❌ Error writing response: %v\n", err)
-		return false, err
-	}
-
-	fmt.Printf("✅ Response sent successfully (%d bytes)\n", len(respBytes))
+	fmt.Println("✅ Stream complete")
 	return true, nil
 }
