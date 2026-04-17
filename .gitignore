@@ -21,6 +21,7 @@ vendor/
 
 # IDE
 .idea/
+.kilo/
 .vscode/
 *.swp
 *.swo
