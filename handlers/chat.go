@@ -174,9 +174,6 @@ func ChatCompletionsHandler(w http.ResponseWriter, r *http.Request) {
 
 	fmt.Println("🔄 Beginning proxy attempts...")
 
-	resultChan := make(chan bool, 1)
-	errChan := make(chan error, 1)
-
 	for i := 0; i < services.MaxProxyAttempts && !success; i++ {
 		select {
 		case <-ctx.Done():
@@ -203,39 +200,21 @@ func ChatCompletionsHandler(w http.ResponseWriter, r *http.Request) {
 
 			fmt.Printf("🌐 Attempt %d: Using proxy %s\n", i+1, proxy)
 
-			go func(p string, attemptNum int) {
-				result, err := sendChatRequest(ctx, p, services.DeepInfraBaseURL+services.ChatEndpoint, data, chatReq.Stream, w)
-				if err != nil {
-					fmt.Printf("❌ Proxy attempt %d failed: %v\n", attemptNum, err)
-					services.RemoveProxy(p)
-					errChan <- err
-					return
-				}
-
-				if result {
-					fmt.Printf("✅ Chat completion successful using proxy %s (attempt %d)\n", p, attemptNum)
-					resultChan <- true
-				} else {
-					errChan <- fmt.Errorf("proxy request failed without error")
-				}
-			}(proxy, i+1)
-
-			select {
-			case result := <-resultChan:
-				if result {
-					success = true
-					break
-				}
-			case err := <-errChan:
+			result, err := sendChatRequest(ctx, proxy, services.DeepInfraBaseURL+services.ChatEndpoint, data, chatReq.Stream, w)
+			if err != nil {
+				fmt.Printf("❌ Proxy attempt %d failed: %v\n", i+1, err)
+				services.RemoveProxy(proxy)
 				lastErr = err
 				continue
-			case <-time.After(10 * time.Second):
-				continue
 			}
 
-			if success {
+			if result {
+				fmt.Printf("✅ Chat completion successful using proxy %s (attempt %d)\n", proxy, i+1)
+				success = true
 				break
 			}
+
+			lastErr = fmt.Errorf("proxy request failed without error")
 		}
 	}
 
@@ -307,6 +286,7 @@ func handleStreamResponse(w http.ResponseWriter, resp *http.Response) (bool, err
 	var buf bytes.Buffer
 	scanner.Buffer(make([]byte, 64*1024), 1024*1024)
 	chunkCount := 0
+	doneSent := false
 
 	flusher, ok := w.(http.Flusher)
 	if !ok {
@@ -331,6 +311,7 @@ func handleStreamResponse(w http.ResponseWriter, resp *http.Response) (bool, err
 			fmt.Fprintf(w, "data: [DONE]\n\n")
 			flusher.Flush()
 			chunkCount++
+			doneSent = true
 			continue
 		}
 
@@ -460,9 +441,11 @@ func handleStreamResponse(w http.ResponseWriter, resp *http.Response) (bool, err
 		chunkCount++
 	}
 
-	fmt.Fprintf(w, "data: [DONE]\n\n")
-	flusher.Flush()
-	chunkCount++
+	if !doneSent {
+		fmt.Fprintf(w, "data: [DONE]\n\n")
+		flusher.Flush()
+		chunkCount++
+	}
 
 	if err := scanner.Err(); err != nil {
 		fmt.Printf("❌ Stream error: %v\n", err)
