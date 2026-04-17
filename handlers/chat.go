@@ -11,6 +11,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -21,6 +22,38 @@ import (
 )
 
 var chatSemaphore = make(chan struct{}, 100)
+
+const maxDebugPayloadChars = 12000
+
+func isChatDebugEnabled() bool {
+	v := strings.ToLower(strings.TrimSpace(os.Getenv("CHAT_DEBUG")))
+	return v == "1" || v == "true" || v == "yes" || v == "on"
+}
+
+func debugPayload(label string, payload []byte) {
+	if !isChatDebugEnabled() {
+		return
+	}
+
+	payloadStr := string(payload)
+	if len(payloadStr) > maxDebugPayloadChars {
+		payloadStr = payloadStr[:maxDebugPayloadChars] + "...<truncated>"
+	}
+
+	fmt.Printf("🐞 %s (%d bytes): %s\n", label, len(payload), payloadStr)
+}
+
+func debugText(label, text string) {
+	if !isChatDebugEnabled() {
+		return
+	}
+
+	if len(text) > maxDebugPayloadChars {
+		text = text[:maxDebugPayloadChars] + "...<truncated>"
+	}
+
+	fmt.Printf("🐞 %s: %s\n", label, text)
+}
 
 func generateID(prefix string) string {
 	b := make([]byte, 12)
@@ -51,6 +84,7 @@ func ChatCompletionsHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	r.Body.Close()
+	debugPayload("Incoming request body", bodyBytes)
 
 	var chatReq types.ChatCompletionRequest
 	err = json.Unmarshal(bodyBytes, &chatReq)
@@ -128,6 +162,7 @@ func ChatCompletionsHandler(w http.ResponseWriter, r *http.Request) {
 		utils.SendErrorResponse(w, "Failed to marshal request", "internal_error", http.StatusInternalServerError)
 		return
 	}
+	debugPayload("Forwarded request body", data)
 
 	ctx, cancel := context.WithTimeout(r.Context(), 90*time.Second)
 	defer cancel()
@@ -243,6 +278,8 @@ func sendChatRequest(ctx context.Context, proxy, endpoint string, data []byte, i
 	}
 	defer resp.Body.Close()
 
+	debugText("Upstream response status", fmt.Sprintf("status=%d proxy=%s", resp.StatusCode, proxy))
+
 	if resp.StatusCode == http.StatusOK {
 		if isStream {
 			fmt.Println("📶 Handling streaming response")
@@ -254,6 +291,7 @@ func sendChatRequest(ctx context.Context, proxy, endpoint string, data []byte, i
 	}
 
 	body, _ := io.ReadAll(resp.Body)
+	debugPayload("Upstream error body", body)
 	return false, fmt.Errorf("API error (%d): %s", resp.StatusCode, string(body))
 }
 
@@ -289,10 +327,15 @@ func handleStreamResponse(w http.ResponseWriter, resp *http.Response) (bool, err
 		}
 
 		if dataStr == "[DONE]" {
+			debugText("Stream inbound chunk", dataStr)
 			fmt.Fprintf(w, "data: [DONE]\n\n")
 			flusher.Flush()
 			chunkCount++
 			continue
+		}
+
+		if chunkCount < 12 {
+			debugText("Stream inbound chunk", dataStr)
 		}
 
 		var streamChunk map[string]interface{}
@@ -408,6 +451,9 @@ func handleStreamResponse(w http.ResponseWriter, resp *http.Response) (bool, err
 		if err != nil {
 			fmt.Fprintf(w, "data: %s\n\n", dataStr)
 		} else {
+			if chunkCount < 12 {
+				debugPayload("Stream outbound chunk", chunkBytes)
+			}
 			fmt.Fprintf(w, "data: %s\n\n", string(chunkBytes))
 		}
 		flusher.Flush()
@@ -435,6 +481,7 @@ func handleNormalResponse(w http.ResponseWriter, resp *http.Response) (bool, err
 	if err != nil {
 		return false, fmt.Errorf("failed to read response body: %v", err)
 	}
+	debugPayload("Upstream normal response body", bodyBytes)
 
 	var deepInfraResp map[string]interface{}
 	if err := json.Unmarshal(bodyBytes, &deepInfraResp); err != nil {
@@ -544,6 +591,7 @@ func handleNormalResponse(w http.ResponseWriter, resp *http.Response) (bool, err
 	if err != nil {
 		return false, fmt.Errorf("failed to marshal response: %v", err)
 	}
+	debugPayload("Client normal response body", respBytes)
 
 	w.WriteHeader(http.StatusOK)
 	_, err = w.Write(respBytes)
