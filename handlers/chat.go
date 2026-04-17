@@ -330,6 +330,64 @@ func handleStreamResponse(w http.ResponseWriter, resp *http.Response) (bool, err
 						if content, ok := deltaRaw["content"].(string); ok {
 							delta.Content = content
 						}
+						if functionCallRaw, ok := deltaRaw["function_call"].(map[string]interface{}); ok {
+							functionCall := &types.DeltaFunctionCall{}
+							if name, ok := functionCallRaw["name"].(string); ok {
+								nameCopy := name
+								functionCall.Name = &nameCopy
+							}
+							if arguments, ok := functionCallRaw["arguments"].(string); ok {
+								argumentsCopy := arguments
+								functionCall.Arguments = &argumentsCopy
+							}
+							if functionCall.Name != nil || functionCall.Arguments != nil {
+								delta.FunctionCall = functionCall
+							}
+						}
+						if toolCallsRaw, ok := deltaRaw["tool_calls"].([]interface{}); ok {
+							delta.ToolCalls = make([]types.DeltaToolCall, 0, len(toolCallsRaw))
+							for _, tcRaw := range toolCallsRaw {
+								tcMap, ok := tcRaw.(map[string]interface{})
+								if !ok {
+									continue
+								}
+
+								toolCall := types.DeltaToolCall{}
+								if idx, ok := tcMap["index"].(float64); ok {
+									idxInt := int(idx)
+									toolCall.Index = &idxInt
+								}
+								if id, ok := tcMap["id"].(string); ok {
+									idCopy := id
+									toolCall.ID = &idCopy
+								}
+								if tcType, ok := tcMap["type"].(string); ok {
+									typeCopy := tcType
+									toolCall.Type = &typeCopy
+								}
+								if fnRaw, ok := tcMap["function"].(map[string]interface{}); ok {
+									deltaFunction := &types.DeltaFunctionCall{}
+									if name, ok := fnRaw["name"].(string); ok {
+										nameCopy := name
+										deltaFunction.Name = &nameCopy
+									}
+									if arguments, ok := fnRaw["arguments"].(string); ok {
+										argumentsCopy := arguments
+										deltaFunction.Arguments = &argumentsCopy
+									}
+									if deltaFunction.Name != nil || deltaFunction.Arguments != nil {
+										toolCall.Function = deltaFunction
+									}
+								}
+
+								if toolCall.Index != nil || toolCall.ID != nil || toolCall.Type != nil || toolCall.Function != nil {
+									delta.ToolCalls = append(delta.ToolCalls, toolCall)
+								}
+							}
+							if len(delta.ToolCalls) == 0 {
+								delta.ToolCalls = nil
+							}
+						}
 						normalizedChoice.Delta = delta
 					} else if text, ok := choice["text"].(string); ok {
 						normalizedChoice.Delta = &types.ChatCompletionDelta{
@@ -401,6 +459,47 @@ func handleNormalResponse(w http.ResponseWriter, resp *http.Response) (bool, err
 					}
 					if content, ok := msgRaw["content"].(string); ok {
 						message.Content = content
+					}
+					if functionCallRaw, ok := msgRaw["function_call"].(map[string]interface{}); ok {
+						functionCall := &types.FunctionCall{}
+						if name, ok := functionCallRaw["name"].(string); ok {
+							functionCall.Name = name
+						}
+						if arguments, ok := functionCallRaw["arguments"].(string); ok {
+							functionCall.Arguments = arguments
+						}
+						message.FunctionCall = functionCall
+					}
+					if toolCallsRaw, ok := msgRaw["tool_calls"].([]interface{}); ok {
+						message.ToolCalls = make([]types.ToolCall, 0, len(toolCallsRaw))
+						for _, tcRaw := range toolCallsRaw {
+							tcMap, ok := tcRaw.(map[string]interface{})
+							if !ok {
+								continue
+							}
+
+							toolCall := types.ToolCall{}
+							if idx, ok := tcMap["index"].(float64); ok {
+								idxInt := int(idx)
+								toolCall.Index = &idxInt
+							}
+							if id, ok := tcMap["id"].(string); ok {
+								toolCall.ID = id
+							}
+							if tcType, ok := tcMap["type"].(string); ok {
+								toolCall.Type = tcType
+							}
+							if fnRaw, ok := tcMap["function"].(map[string]interface{}); ok {
+								if name, ok := fnRaw["name"].(string); ok {
+									toolCall.Function.Name = name
+								}
+								if arguments, ok := fnRaw["arguments"].(string); ok {
+									toolCall.Function.Arguments = arguments
+								}
+							}
+
+							message.ToolCalls = append(message.ToolCalls, toolCall)
+						}
 					}
 				}
 

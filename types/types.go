@@ -1,31 +1,35 @@
 package types
 
 type ChatCompletionRequest struct {
-	Model            string          `json:"model"`
-	Messages         []ChatMessage   `json:"messages"`
-	Stream           bool            `json:"stream"`
-	Temperature      float64         `json:"temperature,omitempty"`
-	MaxTokens        int             `json:"max_tokens,omitempty"`
-	TopP             float64         `json:"top_p,omitempty"`
-	N                int             `json:"n,omitempty"`
-	PresencePenalty  float64         `json:"presence_penalty,omitempty"`
-	FrequencyPenalty float64         `json:"frequency_penalty,omitempty"`
-	Stop             interface{}     `json:"stop,omitempty"`
-	Tools            []Tool          `json:"tools,omitempty"`
-	ToolChoice       interface{}     `json:"tool_choice,omitempty"`
-	ResponseFormat   *ResponseFormat `json:"response_format,omitempty"`
-	User             string          `json:"user,omitempty"`
-	Seed             *int            `json:"seed,omitempty"`
-	Logprobs         bool            `json:"logprobs,omitempty"`
-	TopLogprobs      int             `json:"top_logprobs,omitempty"`
+	Model             string          `json:"model"`
+	Messages          []ChatMessage   `json:"messages"`
+	Stream            bool            `json:"stream"`
+	Temperature       float64         `json:"temperature,omitempty"`
+	MaxTokens         int             `json:"max_tokens,omitempty"`
+	TopP              float64         `json:"top_p,omitempty"`
+	N                 int             `json:"n,omitempty"`
+	PresencePenalty   float64         `json:"presence_penalty,omitempty"`
+	FrequencyPenalty  float64         `json:"frequency_penalty,omitempty"`
+	Stop              interface{}     `json:"stop,omitempty"`
+	Tools             []Tool          `json:"tools,omitempty"`
+	ToolChoice        interface{}     `json:"tool_choice,omitempty"`
+	Functions         []Function      `json:"functions,omitempty"`
+	FunctionCall      interface{}     `json:"function_call,omitempty"`
+	ParallelToolCalls *bool           `json:"parallel_tool_calls,omitempty"`
+	ResponseFormat    *ResponseFormat `json:"response_format,omitempty"`
+	User              string          `json:"user,omitempty"`
+	Seed              *int            `json:"seed,omitempty"`
+	Logprobs          bool            `json:"logprobs,omitempty"`
+	TopLogprobs       int             `json:"top_logprobs,omitempty"`
 }
 
 type ChatMessage struct {
-	Role       string      `json:"role"`
-	Content    interface{} `json:"content"` // Can be string or array of ContentPart
-	Name       string      `json:"name,omitempty"`
-	ToolCalls  []ToolCall  `json:"tool_calls,omitempty"`
-	ToolCallID string      `json:"tool_call_id,omitempty"`
+	Role         string        `json:"role"`
+	Content      interface{}   `json:"content"` // Can be string or array of ContentPart
+	Name         string        `json:"name,omitempty"`
+	FunctionCall *FunctionCall `json:"function_call,omitempty"`
+	ToolCalls    []ToolCall    `json:"tool_calls,omitempty"`
+	ToolCallID   string        `json:"tool_call_id,omitempty"`
 }
 
 type ContentPart struct {
@@ -50,6 +54,7 @@ type Function struct {
 }
 
 type ToolCall struct {
+	Index    *int         `json:"index,omitempty"`
 	ID       string       `json:"id"`
 	Type     string       `json:"type"`
 	Function FunctionCall `json:"function"`
@@ -58,6 +63,18 @@ type ToolCall struct {
 type FunctionCall struct {
 	Name      string `json:"name"`
 	Arguments string `json:"arguments"`
+}
+
+type DeltaFunctionCall struct {
+	Name      *string `json:"name,omitempty"`
+	Arguments *string `json:"arguments,omitempty"`
+}
+
+type DeltaToolCall struct {
+	Index    *int               `json:"index,omitempty"`
+	ID       *string            `json:"id,omitempty"`
+	Type     *string            `json:"type,omitempty"`
+	Function *DeltaFunctionCall `json:"function,omitempty"`
 }
 
 type ResponseFormat struct {
@@ -147,9 +164,10 @@ type ChatCompletionChoice struct {
 }
 
 type ChatCompletionDelta struct {
-	Role      string      `json:"role,omitempty"`
-	Content   interface{} `json:"content,omitempty"`
-	ToolCalls []ToolCall  `json:"tool_calls,omitempty"`
+	Role         string             `json:"role,omitempty"`
+	Content      interface{}        `json:"content,omitempty"`
+	FunctionCall *DeltaFunctionCall `json:"function_call,omitempty"`
+	ToolCalls    []DeltaToolCall    `json:"tool_calls,omitempty"`
 }
 
 type ChatCompletionUsage struct {
