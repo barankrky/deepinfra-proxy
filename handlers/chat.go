@@ -354,6 +354,9 @@ func handleStreamResponse(w http.ResponseWriter, resp *http.Response) (bool, err
 						if content, ok := deltaRaw["content"].(string); ok {
 							delta.Content = content
 						}
+						if reasoningContent, exists := deltaRaw["reasoning_content"]; exists && reasoningContent != nil {
+							delta.ReasoningContent = reasoningContent
+						}
 						if functionCallRaw, ok := deltaRaw["function_call"].(map[string]interface{}); ok {
 							functionCall := &types.DeltaFunctionCall{}
 							if name, ok := functionCallRaw["name"].(string); ok {
@@ -489,6 +492,9 @@ func handleNormalResponse(w http.ResponseWriter, resp *http.Response) (bool, err
 					}
 					if content, ok := msgRaw["content"].(string); ok {
 						message.Content = content
+					}
+					if reasoningContent, exists := msgRaw["reasoning_content"]; exists && reasoningContent != nil {
+						message.ReasoningContent = reasoningContent
 					}
 					if functionCallRaw, ok := msgRaw["function_call"].(map[string]interface{}); ok {
 						functionCall := &types.FunctionCall{}

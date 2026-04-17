@@ -24,12 +24,13 @@ type ChatCompletionRequest struct {
 }
 
 type ChatMessage struct {
-	Role         string        `json:"role"`
-	Content      interface{}   `json:"content"` // Can be string or array of ContentPart
-	Name         string        `json:"name,omitempty"`
-	FunctionCall *FunctionCall `json:"function_call,omitempty"`
-	ToolCalls    []ToolCall    `json:"tool_calls,omitempty"`
-	ToolCallID   string        `json:"tool_call_id,omitempty"`
+	Role             string        `json:"role"`
+	Content          interface{}   `json:"content"` // Can be string or array of ContentPart
+	ReasoningContent interface{}   `json:"reasoning_content,omitempty"`
+	Name             string        `json:"name,omitempty"`
+	FunctionCall     *FunctionCall `json:"function_call,omitempty"`
+	ToolCalls        []ToolCall    `json:"tool_calls,omitempty"`
+	ToolCallID       string        `json:"tool_call_id,omitempty"`
 }
 
 type ContentPart struct {
@@ -164,10 +165,11 @@ type ChatCompletionChoice struct {
 }
 
 type ChatCompletionDelta struct {
-	Role         string             `json:"role,omitempty"`
-	Content      interface{}        `json:"content,omitempty"`
-	FunctionCall *DeltaFunctionCall `json:"function_call,omitempty"`
-	ToolCalls    []DeltaToolCall    `json:"tool_calls,omitempty"`
+	Role             string             `json:"role,omitempty"`
+	Content          interface{}        `json:"content,omitempty"`
+	ReasoningContent interface{}        `json:"reasoning_content,omitempty"`
+	FunctionCall     *DeltaFunctionCall `json:"function_call,omitempty"`
+	ToolCalls        []DeltaToolCall    `json:"tool_calls,omitempty"`
 }
 
 type ChatCompletionUsage struct {
