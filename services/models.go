@@ -25,14 +25,14 @@ var (
 
 // ModelInfo contains additional metadata about models
 type ModelInfo struct {
-	ID          string    `json:"id"`
-	Object      string    `json:"object"`
-	Created     int64     `json:"created"`
-	OwnedBy     string    `json:"owned_by"`
-	Description string    `json:"description,omitempty"`
-	MaxTokens   int       `json:"max_tokens,omitempty"`
-	Type        string    `json:"type,omitempty"`
-	Pricing     *Pricing  `json:"pricing,omitempty"`
+	ID          string   `json:"id"`
+	Object      string   `json:"object"`
+	Created     int64    `json:"created"`
+	OwnedBy     string   `json:"owned_by"`
+	Description string   `json:"description,omitempty"`
+	MaxTokens   int      `json:"max_tokens,omitempty"`
+	Type        string   `json:"type,omitempty"`
+	Pricing     *Pricing `json:"pricing,omitempty"`
 }
 
 type Pricing struct {
@@ -51,7 +51,7 @@ func GetAPIKey() string {
 }
 
 func IsAuthEnabled() bool {
-    return apiKey != ""
+	return apiKey != ""
 }
 
 func GetModelCount() int {
@@ -63,7 +63,7 @@ func GetModelCount() int {
 func GetSupportedModels() []string {
 	modelsMutex.RLock()
 	defer modelsMutex.RUnlock()
-	
+
 	models := make([]string, len(supportedModels))
 	copy(models, supportedModels)
 	return models
@@ -73,7 +73,7 @@ func GetSupportedModels() []string {
 func GetModelInfo(modelID string) (ModelInfo, bool) {
 	modelsMutex.RLock()
 	defer modelsMutex.RUnlock()
-	
+
 	info, exists := modelMetadata[modelID]
 	return info, exists
 }
@@ -82,7 +82,7 @@ func GetModelInfo(modelID string) (ModelInfo, bool) {
 func GetAllModelInfo() []ModelInfo {
 	modelsMutex.RLock()
 	defer modelsMutex.RUnlock()
-	
+
 	var models []ModelInfo
 	for _, modelName := range supportedModels {
 		if info, exists := modelMetadata[modelName]; exists {
@@ -128,41 +128,41 @@ func fetchSupportedModels(ctx context.Context) ([]string, map[string]ModelInfo, 
 	if err != nil {
 		return nil, nil, err
 	}
-	
+
 	if len(allModels) == 0 {
 		return nil, nil, fmt.Errorf("no models received from API")
 	}
-	
+
 	fmt.Printf("🔍 Testing accessibility for %d models...\n", len(allModels))
-	
+
 	var wg sync.WaitGroup
 	results := make(chan string, len(allModels))
 	semaphore := make(chan struct{}, 10)
-	
+
 	for _, model := range allModels {
 		wg.Add(1)
 		go func(m string) {
 			defer wg.Done()
 			semaphore <- struct{}{}
 			defer func() { <-semaphore }()
-			
+
 			if isModelAccessible(ctx, m) {
 				fmt.Printf("✅ Model accessible: %s\n", m)
 				results <- m
 			}
 		}(model)
 	}
-	
+
 	go func() {
 		wg.Wait()
 		close(results)
 	}()
-	
+
 	var accessibleModels []string
 	for model := range results {
 		accessibleModels = append(accessibleModels, model)
 	}
-	
+
 	fmt.Printf("✅ Found %d accessible models out of %d total\n", len(accessibleModels), len(allModels))
 	return accessibleModels, modelInfo, nil
 }
@@ -171,65 +171,66 @@ func fetchAllModels(ctx context.Context) ([]string, map[string]ModelInfo, error)
 	var models []string
 	var lastError error
 	modelInfo := make(map[string]ModelInfo)
-	
+
 	for attempts := 0; attempts < MaxRetries; attempts++ {
 		proxy := GetWorkingProxy()
 		if proxy == "" {
 			time.Sleep(time.Second)
 			continue
 		}
-		
+
 		fmt.Printf("🌐 Fetching model list using proxy: %s\n", proxy)
-		
+
 		proxyURL, err := url.Parse("http://" + proxy)
 		if err != nil {
-			RemoveProxy(proxy)
+			MarkProxyFailed(proxy)
 			lastError = err
 			continue
 		}
-		
+
 		client := &http.Client{
 			Transport: &http.Transport{
 				Proxy: http.ProxyURL(proxyURL),
 			},
 			Timeout: 30 * time.Second,
 		}
-		
+
 		req, err := http.NewRequestWithContext(ctx, "GET", DeepInfraBaseURL+ModelsEndpoint, nil)
 		if err != nil {
 			lastError = err
 			continue
 		}
-		
+
 		req.Header = getHeaders()
-		
+
 		resp, err := client.Do(req)
 		if err != nil {
-			RemoveProxy(proxy)
-			lastError = err
+			MarkProxyFailed(proxy)
 			continue
 		}
-		
+
 		if resp.StatusCode != http.StatusOK {
 			resp.Body.Close()
-			RemoveProxy(proxy)
+			if resp.StatusCode >= 500 || resp.StatusCode == 408 || resp.StatusCode == 429 {
+				MarkProxyFailed(proxy)
+			}
 			lastError = fmt.Errorf("failed to get models list: status %d", resp.StatusCode)
 			continue
 		}
-		
+
 		var modelResp types.ModelResponse
 		err = json.NewDecoder(resp.Body).Decode(&modelResp)
 		resp.Body.Close()
-		
+
 		if err != nil {
 			lastError = err
 			continue
 		}
-		
+
 		currentTime := time.Now().Unix()
 		for _, model := range modelResp.Data {
 			models = append(models, model.ID)
-			
+
 			// Create enhanced model info
 			modelInfo[model.ID] = ModelInfo{
 				ID:      model.ID,
@@ -239,22 +240,22 @@ func fetchAllModels(ctx context.Context) ([]string, map[string]ModelInfo, error)
 				Type:    inferModelType(model.ID),
 			}
 		}
-		
+
 		fmt.Printf("📋 Retrieved %d models from API\n", len(models))
 		return models, modelInfo, nil
 	}
-	
+
 	if lastError != nil {
 		return nil, nil, fmt.Errorf("failed to fetch models after %d attempts: %v", MaxRetries, lastError)
 	}
-	
+
 	return nil, nil, fmt.Errorf("failed to fetch models after %d attempts", MaxRetries)
 }
 
 // inferModelType attempts to categorize models based on their names
 func inferModelType(modelID string) string {
 	modelLower := strings.ToLower(modelID)
-	
+
 	if strings.Contains(modelLower, "whisper") {
 		return "audio"
 	}
@@ -264,98 +265,91 @@ func inferModelType(modelID string) string {
 	if strings.Contains(modelLower, "embedding") {
 		return "embedding"
 	}
-	if strings.Contains(modelLower, "llama") || strings.Contains(modelLower, "gpt") || strings.Contains(modelLower, "claude") || 
-	   strings.Contains(modelLower, "mistral") || strings.Contains(modelLower, "deepseek") || strings.Contains(modelLower, "qwen") {
+	if strings.Contains(modelLower, "llama") || strings.Contains(modelLower, "gpt") || strings.Contains(modelLower, "claude") ||
+		strings.Contains(modelLower, "mistral") || strings.Contains(modelLower, "deepseek") || strings.Contains(modelLower, "qwen") {
 		return "text"
 	}
-	
+
 	// Default to text for most models
 	return "text"
 }
 
 func isModelAccessible(ctx context.Context, model string) bool {
-	for attempts := 0; attempts < 2; attempts++ {
-		proxy := GetWorkingProxy()
-		if proxy == "" {
-			time.Sleep(time.Second)
-			continue
-		}
-		
-		proxyURL, err := url.Parse("http://" + proxy)
-		if err != nil {
-			RemoveProxy(proxy)
-			continue
-		}
-		
-		client := &http.Client{
-			Transport: &http.Transport{
-				Proxy: http.ProxyURL(proxyURL),
-			},
-			Timeout: 20 * time.Second,
-		}
-		
-		chatReq := types.ChatCompletionRequest{
-			Model: model,
-			Messages: []types.ChatMessage{
-				{
-					Role:    "user",
-					Content: "Hello",
-				},
-			},
-			MaxTokens: 10,
-		}
-		
-		data, err := json.Marshal(chatReq)
-		if err != nil {
-			continue
-		}
-		
-		req, err := http.NewRequestWithContext(ctx, "POST", DeepInfraBaseURL+ChatEndpoint, bytes.NewBuffer(data))
-		if err != nil {
-			continue
-		}
-		
-		req.Header = getHeaders()
-		
-		resp, err := client.Do(req)
-		if err != nil {
-			RemoveProxy(proxy)
-			continue
-		}
-		
-		body, _ := io.ReadAll(resp.Body)
-		resp.Body.Close()
-		
-		if strings.Contains(string(body), "Not authenticated") {
-			return false
-		}
-		
-		return resp.StatusCode == http.StatusOK
+	proxy := GetWorkingProxy()
+	if proxy == "" {
+		return false
 	}
-	
-	return false
+
+	proxyURL, err := url.Parse("http://" + proxy)
+	if err != nil {
+		return false
+	}
+
+	client := &http.Client{
+		Transport: &http.Transport{
+			Proxy: http.ProxyURL(proxyURL),
+		},
+		Timeout: 20 * time.Second,
+	}
+
+	chatReq := types.ChatCompletionRequest{
+		Model: model,
+		Messages: []types.ChatMessage{
+			{
+				Role:    "user",
+				Content: "Hello",
+			},
+		},
+		MaxTokens: 10,
+	}
+
+	data, err := json.Marshal(chatReq)
+	if err != nil {
+		return false
+	}
+
+	req, err := http.NewRequestWithContext(ctx, "POST", DeepInfraBaseURL+ChatEndpoint, bytes.NewBuffer(data))
+	if err != nil {
+		return false
+	}
+
+	req.Header = getHeaders()
+
+	resp, err := client.Do(req)
+	if err != nil {
+		return false
+	}
+
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+
+	if strings.Contains(string(body), "Not authenticated") {
+		return false
+	}
+
+	return resp.StatusCode == http.StatusOK
 }
 
 func IsModelSupported(model string) bool {
 	modelsMutex.RLock()
-	
+
 	if len(supportedModels) == 0 && time.Since(lastModelsUpdate) > 5*time.Second {
 		modelsMutex.RUnlock()
-		
+
 		go func() {
 			UpdateSupportedModels()
 		}()
-		
+
 		return true
 	}
-	
+
 	for _, supportedModel := range supportedModels {
 		if model == supportedModel {
 			modelsMutex.RUnlock()
 			return true
 		}
 	}
-	
+
 	modelsMutex.RUnlock()
 	return false
 }

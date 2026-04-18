@@ -200,10 +200,12 @@ func ChatCompletionsHandler(w http.ResponseWriter, r *http.Request) {
 
 			fmt.Printf("🌐 Attempt %d: Using proxy %s\n", i+1, proxy)
 
-			result, err := sendChatRequest(ctx, proxy, services.DeepInfraBaseURL+services.ChatEndpoint, data, chatReq.Stream, w)
+			result, err, isProxyErr := sendChatRequest(ctx, proxy, services.DeepInfraBaseURL+services.ChatEndpoint, data, chatReq.Stream, w)
 			if err != nil {
 				fmt.Printf("❌ Proxy attempt %d failed: %v\n", i+1, err)
-				services.MarkProxyFailed(proxy)
+				if isProxyErr {
+					services.MarkProxyFailed(proxy)
+				}
 				lastErr = err
 				continue
 			}
@@ -228,10 +230,10 @@ func ChatCompletionsHandler(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func sendChatRequest(ctx context.Context, proxy, endpoint string, data []byte, isStream bool, w http.ResponseWriter) (bool, error) {
+func sendChatRequest(ctx context.Context, proxy, endpoint string, data []byte, isStream bool, w http.ResponseWriter) (bool, error, bool) {
 	proxyURL, err := url.Parse("http://" + proxy)
 	if err != nil {
-		return false, err
+		return false, err, true
 	}
 
 	client := &http.Client{
@@ -243,7 +245,7 @@ func sendChatRequest(ctx context.Context, proxy, endpoint string, data []byte, i
 
 	req, err := http.NewRequestWithContext(ctx, "POST", endpoint, bytes.NewBuffer(data))
 	if err != nil {
-		return false, err
+		return false, err, false
 	}
 
 	req.Header.Set("Content-Type", "application/json")
@@ -253,7 +255,7 @@ func sendChatRequest(ctx context.Context, proxy, endpoint string, data []byte, i
 	fmt.Printf("📡 Sending request to %s via proxy %s\n", endpoint, proxy)
 	resp, err := client.Do(req)
 	if err != nil {
-		return false, err
+		return false, err, true
 	}
 	defer resp.Body.Close()
 
@@ -262,16 +264,20 @@ func sendChatRequest(ctx context.Context, proxy, endpoint string, data []byte, i
 	if resp.StatusCode == http.StatusOK {
 		if isStream {
 			fmt.Println("📶 Handling streaming response")
-			return handleStreamResponse(w, resp)
+			ok, streamErr := handleStreamResponse(w, resp)
+			return ok, streamErr, false
 		} else {
 			fmt.Println("📄 Handling normal response")
-			return handleNormalResponse(w, resp)
+			ok, normalErr := handleNormalResponse(w, resp)
+			return ok, normalErr, false
 		}
 	}
 
 	body, _ := io.ReadAll(resp.Body)
 	debugPayload("Upstream error body", body)
-	return false, fmt.Errorf("API error (%d): %s", resp.StatusCode, string(body))
+
+	isProxyErr := resp.StatusCode >= 500 || resp.StatusCode == 408 || resp.StatusCode == 429
+	return false, fmt.Errorf("API error (%d): %s", resp.StatusCode, string(body)), isProxyErr
 }
 
 func handleStreamResponse(w http.ResponseWriter, resp *http.Response) (bool, error) {

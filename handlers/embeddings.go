@@ -87,10 +87,12 @@ func EmbeddingsHandler(w http.ResponseWriter, r *http.Request) {
 
 			fmt.Printf("🌐 Attempt %d: Using proxy %s\n", i+1, proxy)
 
-			result, err := sendEmbeddingRequest(ctx, proxy, services.DeepInfraBaseURL+"/embeddings", data, w)
+			result, err, isProxyErr := sendEmbeddingRequest(ctx, proxy, services.DeepInfraBaseURL+"/embeddings", data, w)
 			if err != nil {
 				fmt.Printf("❌ Proxy attempt %d failed: %v\n", i+1, err)
-				services.MarkProxyFailed(proxy)
+				if isProxyErr {
+					services.MarkProxyFailed(proxy)
+				}
 				continue
 			}
 
@@ -104,10 +106,10 @@ func EmbeddingsHandler(w http.ResponseWriter, r *http.Request) {
 	utils.SendErrorResponse(w, "Unable to process the request after multiple attempts", "internal_error", http.StatusInternalServerError)
 }
 
-func sendEmbeddingRequest(ctx context.Context, proxy, endpoint string, data []byte, w http.ResponseWriter) (bool, error) {
+func sendEmbeddingRequest(ctx context.Context, proxy, endpoint string, data []byte, w http.ResponseWriter) (bool, error, bool) {
 	proxyURL, err := url.Parse("http://" + proxy)
 	if err != nil {
-		return false, err
+		return false, err, true
 	}
 
 	client := &http.Client{
@@ -119,7 +121,7 @@ func sendEmbeddingRequest(ctx context.Context, proxy, endpoint string, data []by
 
 	req, err := http.NewRequestWithContext(ctx, "POST", endpoint, bytes.NewBuffer(data))
 	if err != nil {
-		return false, err
+		return false, err, false
 	}
 
 	req.Header.Set("Content-Type", "application/json")
@@ -128,23 +130,24 @@ func sendEmbeddingRequest(ctx context.Context, proxy, endpoint string, data []by
 
 	resp, err := client.Do(req)
 	if err != nil {
-		return false, err
+		return false, err, true
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
-		return false, fmt.Errorf("API error (%d): %s", resp.StatusCode, string(body))
+		isProxyErr := resp.StatusCode >= 500 || resp.StatusCode == 408 || resp.StatusCode == 429
+		return false, fmt.Errorf("API error (%d): %s", resp.StatusCode, string(body)), isProxyErr
 	}
 
 	bodyBytes, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return false, fmt.Errorf("failed to read response body: %v", err)
+		return false, fmt.Errorf("failed to read response body: %v", err), false
 	}
 
 	var deepInfraResp map[string]interface{}
 	if err := json.Unmarshal(bodyBytes, &deepInfraResp); err != nil {
-		return false, fmt.Errorf("failed to parse response: %v", err)
+		return false, fmt.Errorf("failed to parse response: %v", err), false
 	}
 
 	openAIResp := types.EmbeddingResponse{
@@ -211,7 +214,7 @@ func sendEmbeddingRequest(ctx context.Context, proxy, endpoint string, data []by
 	w.WriteHeader(http.StatusOK)
 	json.NewEncoder(w).Encode(openAIResp)
 
-	return true, nil
+	return true, nil, false
 }
 
 func CompletionsHandler(w http.ResponseWriter, r *http.Request) {
@@ -301,10 +304,12 @@ func CompletionsHandler(w http.ResponseWriter, r *http.Request) {
 
 			fmt.Printf("🌐 Attempt %d: Using proxy %s\n", i+1, proxy)
 
-			result, err := sendCompletionRequest(ctx, proxy, services.DeepInfraBaseURL+services.ChatEndpoint, data, compReq.Stream, w)
+			result, err, isProxyErr := sendCompletionRequest(ctx, proxy, services.DeepInfraBaseURL+services.ChatEndpoint, data, compReq.Stream, w)
 			if err != nil {
 				fmt.Printf("❌ Proxy attempt %d failed: %v\n", i+1, err)
-				services.MarkProxyFailed(proxy)
+				if isProxyErr {
+					services.MarkProxyFailed(proxy)
+				}
 				continue
 			}
 
@@ -341,10 +346,10 @@ func promptToMessages(prompt interface{}) []types.ChatMessage {
 	return messages
 }
 
-func sendCompletionRequest(ctx context.Context, proxy, endpoint string, data []byte, isStream bool, w http.ResponseWriter) (bool, error) {
+func sendCompletionRequest(ctx context.Context, proxy, endpoint string, data []byte, isStream bool, w http.ResponseWriter) (bool, error, bool) {
 	proxyURL, err := url.Parse("http://" + proxy)
 	if err != nil {
-		return false, err
+		return false, err, true
 	}
 
 	client := &http.Client{
@@ -356,7 +361,7 @@ func sendCompletionRequest(ctx context.Context, proxy, endpoint string, data []b
 
 	req, err := http.NewRequestWithContext(ctx, "POST", endpoint, bytes.NewBuffer(data))
 	if err != nil {
-		return false, err
+		return false, err, false
 	}
 
 	req.Header.Set("Content-Type", "application/json")
@@ -365,19 +370,22 @@ func sendCompletionRequest(ctx context.Context, proxy, endpoint string, data []b
 
 	resp, err := client.Do(req)
 	if err != nil {
-		return false, err
+		return false, err, true
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
-		return false, fmt.Errorf("API error (%d): %s", resp.StatusCode, string(body))
+		isProxyErr := resp.StatusCode >= 500 || resp.StatusCode == 408 || resp.StatusCode == 429
+		return false, fmt.Errorf("API error (%d): %s", resp.StatusCode, string(body)), isProxyErr
 	}
 
 	if isStream {
-		return handleCompletionStreamResponse(w, resp)
+		ok, streamErr := handleCompletionStreamResponse(w, resp)
+		return ok, streamErr, false
 	}
-	return handleCompletionNormalResponse(w, resp)
+	ok, normalErr := handleCompletionNormalResponse(w, resp)
+	return ok, normalErr, false
 }
 
 func handleCompletionStreamResponse(w http.ResponseWriter, resp *http.Response) (bool, error) {
