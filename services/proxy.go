@@ -82,21 +82,33 @@ func GetWorkingProxy() string {
 	defer currentProxyMutex.Unlock()
 
 	if currentProxy != "" {
-		return currentProxy
+		proxyMutex.RLock()
+		for _, p := range workingProxies {
+			if p == currentProxy {
+				proxyMutex.RUnlock()
+				return currentProxy
+			}
+		}
+		proxyMutex.RUnlock()
+		fmt.Printf("⚠️ Current proxy %s no longer in pool, selecting new one\n", currentProxy)
+		currentProxy = ""
 	}
 
 	proxyMutex.RLock()
-	defer proxyMutex.RUnlock()
-
 	if len(workingProxies) == 0 {
+		proxyMutex.RUnlock()
 		if time.Since(lastProxyUpdate) > 2*time.Minute {
 			fmt.Println("⚠️ No working proxies available, refreshing list...")
 			go UpdateWorkingProxies()
 		}
 		return ""
 	}
+	proxyMutex.RUnlock()
 
+	proxyMutex.Lock()
 	currentProxy = workingProxies[0]
+	proxyMutex.Unlock()
+
 	fmt.Printf("📌 Selected new active proxy: %s\n", currentProxy)
 	return currentProxy
 }
