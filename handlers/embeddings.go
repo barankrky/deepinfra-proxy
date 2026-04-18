@@ -90,7 +90,7 @@ func EmbeddingsHandler(w http.ResponseWriter, r *http.Request) {
 			result, err := sendEmbeddingRequest(ctx, proxy, services.DeepInfraBaseURL+"/embeddings", data, w)
 			if err != nil {
 				fmt.Printf("❌ Proxy attempt %d failed: %v\n", i+1, err)
-				services.RemoveProxy(proxy)
+				services.MarkProxyFailed(proxy)
 				continue
 			}
 
@@ -304,7 +304,7 @@ func CompletionsHandler(w http.ResponseWriter, r *http.Request) {
 			result, err := sendCompletionRequest(ctx, proxy, services.DeepInfraBaseURL+services.ChatEndpoint, data, compReq.Stream, w)
 			if err != nil {
 				fmt.Printf("❌ Proxy attempt %d failed: %v\n", i+1, err)
-				services.RemoveProxy(proxy)
+				services.MarkProxyFailed(proxy)
 				continue
 			}
 

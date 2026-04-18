@@ -40,7 +40,7 @@ func ImageGenerationsHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	r.Body.Close()
-	
+
 	var imageReq types.ImageGenerationRequest
 	err = json.Unmarshal(bodyBytes, &imageReq)
 	if err != nil {
@@ -77,7 +77,7 @@ func ImageGenerationsHandler(w http.ResponseWriter, r *http.Request) {
 
 	// Convert to DeepInfra format
 	deepInfraReq := map[string]interface{}{
-		"prompt": imageReq.Prompt,
+		"prompt":     imageReq.Prompt,
 		"num_images": imageReq.N,
 	}
 
@@ -99,7 +99,7 @@ func ImageGenerationsHandler(w http.ResponseWriter, r *http.Request) {
 
 	success := false
 	var lastErr error
-	
+
 	for i := 0; i < services.MaxProxyAttempts && !success; i++ {
 		select {
 		case <-ctx.Done():
@@ -117,15 +117,15 @@ func ImageGenerationsHandler(w http.ResponseWriter, r *http.Request) {
 			}
 
 			fmt.Printf("🌐 Attempt %d: Using proxy %s\n", i+1, proxy)
-			
+
 			result, err := sendImageRequest(ctx, proxy, services.DeepInfraBaseURL+services.ImageEndpoint, data, w)
 			if err != nil {
 				fmt.Printf("❌ Proxy attempt %d failed: %v\n", i+1, err)
-				services.RemoveProxy(proxy)
+				services.MarkProxyFailed(proxy)
 				lastErr = err
 				continue
 			}
-			
+
 			if result {
 				fmt.Printf("✅ Image generation successful using proxy %s (attempt %d)\n", proxy, i+1)
 				success = true
@@ -161,11 +161,11 @@ func sendImageRequest(ctx context.Context, proxy, endpoint string, data []byte, 
 	if err != nil {
 		return false, err
 	}
-	
+
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("X-Deepinfra-Source", "web-page")
 	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/92.0.4515.107 Safari/537.36")
-	
+
 	fmt.Printf("📡 Sending image request to %s via proxy %s\n", endpoint, proxy)
 	resp, err := client.Do(req)
 	if err != nil {
@@ -215,7 +215,7 @@ func handleImageResponse(w http.ResponseWriter, resp *http.Response) (bool, erro
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 	json.NewEncoder(w).Encode(openAIResp)
-	
+
 	fmt.Printf("✅ Image response sent successfully (%d images)\n", len(openAIResp.Data))
 	return true, nil
 }

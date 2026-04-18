@@ -203,7 +203,7 @@ func ChatCompletionsHandler(w http.ResponseWriter, r *http.Request) {
 			result, err := sendChatRequest(ctx, proxy, services.DeepInfraBaseURL+services.ChatEndpoint, data, chatReq.Stream, w)
 			if err != nil {
 				fmt.Printf("❌ Proxy attempt %d failed: %v\n", i+1, err)
-				services.RemoveProxy(proxy)
+				services.MarkProxyFailed(proxy)
 				lastErr = err
 				continue
 			}
