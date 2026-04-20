@@ -117,7 +117,7 @@ func ImageGenerationsHandler(w http.ResponseWriter, r *http.Request) {
 				continue
 			}
 
-			if i > 0 && !isTimeoutError(lastErr) {
+			if i > 0 && !isTimeoutError(lastErr) && currentProxy != "" {
 				proxy = currentProxy
 			} else {
 				currentProxy = proxy
