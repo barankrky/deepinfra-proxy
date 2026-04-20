@@ -69,6 +69,9 @@ func EmbeddingsHandler(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 90*time.Second)
 	defer cancel()
 
+	var lastErr error
+	var currentProxy string
+
 	for i := 0; i < services.MaxProxyAttempts; i++ {
 		select {
 		case <-ctx.Done():
@@ -85,14 +88,22 @@ func EmbeddingsHandler(w http.ResponseWriter, r *http.Request) {
 				continue
 			}
 
+			if i > 0 && !isTimeoutError(lastErr) {
+				proxy = currentProxy
+			} else {
+				currentProxy = proxy
+			}
+
 			fmt.Printf("🌐 Attempt %d: Using proxy %s\n", i+1, proxy)
 
 			result, err, isProxyErr := sendEmbeddingRequest(ctx, proxy, services.DeepInfraBaseURL+"/embeddings", data, w)
 			if err != nil {
 				fmt.Printf("❌ Proxy attempt %d failed: %v\n", i+1, err)
-				if isProxyErr {
+				if isProxyErr || isTimeoutError(err) {
 					services.MarkProxyFailed(proxy)
+					currentProxy = ""
 				}
+				lastErr = err
 				continue
 			}
 
@@ -286,6 +297,9 @@ func CompletionsHandler(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 90*time.Second)
 	defer cancel()
 
+	var lastErr error
+	var currentProxy string
+
 	for i := 0; i < services.MaxProxyAttempts; i++ {
 		select {
 		case <-ctx.Done():
@@ -302,14 +316,22 @@ func CompletionsHandler(w http.ResponseWriter, r *http.Request) {
 				continue
 			}
 
+			if i > 0 && !isTimeoutError(lastErr) {
+				proxy = currentProxy
+			} else {
+				currentProxy = proxy
+			}
+
 			fmt.Printf("🌐 Attempt %d: Using proxy %s\n", i+1, proxy)
 
 			result, err, isProxyErr := sendCompletionRequest(ctx, proxy, services.DeepInfraBaseURL+services.ChatEndpoint, data, compReq.Stream, w)
 			if err != nil {
 				fmt.Printf("❌ Proxy attempt %d failed: %v\n", i+1, err)
-				if isProxyErr {
+				if isProxyErr || isTimeoutError(err) {
 					services.MarkProxyFailed(proxy)
+					currentProxy = ""
 				}
+				lastErr = err
 				continue
 			}
 

@@ -12,4 +12,7 @@ const (
 	ModelsUpdateTime = 60 * time.Minute
 	MaxProxyAttempts = 10
 	MaxRetries       = 3
+
+	TestModelID      = "Qwen/Qwen3.5-2B"
+	ProxyTestTimeout = 10 * time.Second
 )

@@ -13,7 +13,6 @@ import (
 	"net/url"
 	"os"
 	"strings"
-	"sync"
 	"time"
 
 	"deepinfra-wrapper/services"
@@ -59,6 +58,17 @@ func generateID(prefix string) string {
 	b := make([]byte, 12)
 	rand.Read(b)
 	return prefix + hex.EncodeToString(b)
+}
+
+func isTimeoutError(err error) bool {
+	if err == nil {
+		return false
+	}
+
+	errStr := err.Error()
+	return strings.Contains(errStr, "timeout") ||
+		strings.Contains(errStr, "deadline exceeded") ||
+		strings.Contains(errStr, "context deadline")
 }
 
 func ChatCompletionsHandler(w http.ResponseWriter, r *http.Request) {
@@ -169,8 +179,7 @@ func ChatCompletionsHandler(w http.ResponseWriter, r *http.Request) {
 
 	success := false
 	var lastErr error
-	usedProxies := make(map[string]bool)
-	var mu sync.Mutex
+	var currentProxy string
 
 	fmt.Println("🔄 Beginning proxy attempts...")
 
@@ -190,21 +199,20 @@ func ChatCompletionsHandler(w http.ResponseWriter, r *http.Request) {
 				continue
 			}
 
-			mu.Lock()
-			if usedProxies[proxy] {
-				mu.Unlock()
-				continue
+			if i > 0 && !isTimeoutError(lastErr) {
+				proxy = currentProxy
+			} else {
+				currentProxy = proxy
 			}
-			usedProxies[proxy] = true
-			mu.Unlock()
 
 			fmt.Printf("🌐 Attempt %d: Using proxy %s\n", i+1, proxy)
 
 			result, err, isProxyErr := sendChatRequest(ctx, proxy, services.DeepInfraBaseURL+services.ChatEndpoint, data, chatReq.Stream, w)
 			if err != nil {
 				fmt.Printf("❌ Proxy attempt %d failed: %v\n", i+1, err)
-				if isProxyErr {
+				if isProxyErr || isTimeoutError(err) {
 					services.MarkProxyFailed(proxy)
+					currentProxy = ""
 				}
 				lastErr = err
 				continue

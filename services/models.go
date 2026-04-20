@@ -1,11 +1,9 @@
 package services
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
 	"net/url"
 	"strings"
@@ -133,38 +131,8 @@ func fetchSupportedModels(ctx context.Context) ([]string, map[string]ModelInfo, 
 		return nil, nil, fmt.Errorf("no models received from API")
 	}
 
-	fmt.Printf("🔍 Testing accessibility for %d models...\n", len(allModels))
-
-	var wg sync.WaitGroup
-	results := make(chan string, len(allModels))
-	semaphore := make(chan struct{}, 10)
-
-	for _, model := range allModels {
-		wg.Add(1)
-		go func(m string) {
-			defer wg.Done()
-			semaphore <- struct{}{}
-			defer func() { <-semaphore }()
-
-			if isModelAccessible(ctx, m) {
-				fmt.Printf("✅ Model accessible: %s\n", m)
-				results <- m
-			}
-		}(model)
-	}
-
-	go func() {
-		wg.Wait()
-		close(results)
-	}()
-
-	var accessibleModels []string
-	for model := range results {
-		accessibleModels = append(accessibleModels, model)
-	}
-
-	fmt.Printf("✅ Found %d accessible models out of %d total\n", len(accessibleModels), len(allModels))
-	return accessibleModels, modelInfo, nil
+	fmt.Printf("✅ Retrieved %d models from API\n", len(allModels))
+	return allModels, modelInfo, nil
 }
 
 func fetchAllModels(ctx context.Context) ([]string, map[string]ModelInfo, error) {
@@ -272,62 +240,6 @@ func inferModelType(modelID string) string {
 
 	// Default to text for most models
 	return "text"
-}
-
-func isModelAccessible(ctx context.Context, model string) bool {
-	proxy := GetWorkingProxy()
-	if proxy == "" {
-		return false
-	}
-
-	proxyURL, err := url.Parse("http://" + proxy)
-	if err != nil {
-		return false
-	}
-
-	client := &http.Client{
-		Transport: &http.Transport{
-			Proxy: http.ProxyURL(proxyURL),
-		},
-		Timeout: 20 * time.Second,
-	}
-
-	chatReq := types.ChatCompletionRequest{
-		Model: model,
-		Messages: []types.ChatMessage{
-			{
-				Role:    "user",
-				Content: "Hello",
-			},
-		},
-		MaxTokens: 10,
-	}
-
-	data, err := json.Marshal(chatReq)
-	if err != nil {
-		return false
-	}
-
-	req, err := http.NewRequestWithContext(ctx, "POST", DeepInfraBaseURL+ChatEndpoint, bytes.NewBuffer(data))
-	if err != nil {
-		return false
-	}
-
-	req.Header = getHeaders()
-
-	resp, err := client.Do(req)
-	if err != nil {
-		return false
-	}
-
-	body, _ := io.ReadAll(resp.Body)
-	resp.Body.Close()
-
-	if strings.Contains(string(body), "Not authenticated") {
-		return false
-	}
-
-	return resp.StatusCode == http.StatusOK
 }
 
 func IsModelSupported(model string) bool {

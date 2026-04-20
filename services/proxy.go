@@ -1,6 +1,8 @@
 package services
 
 import (
+	"bytes"
+	"encoding/json"
 	"fmt"
 	"io"
 	"math/rand"
@@ -68,7 +70,20 @@ func UpdateWorkingProxies() {
 		proxyMutex.Unlock()
 
 		currentProxyMutex.Lock()
-		currentProxy = ""
+		if currentProxy != "" {
+			stillValid := false
+			proxyMutex.RLock()
+			for _, p := range workingProxies {
+				if p == currentProxy {
+					stillValid = true
+					break
+				}
+			}
+			proxyMutex.RUnlock()
+			if !stillValid {
+				currentProxy = ""
+			}
+		}
 		currentProxyMutex.Unlock()
 
 		fmt.Printf("✅ Found %d working proxies out of %d tested\n", len(newProxies), len(proxies))
@@ -103,11 +118,8 @@ func GetWorkingProxy() string {
 		}
 		return ""
 	}
-	proxyMutex.RUnlock()
-
-	proxyMutex.Lock()
 	currentProxy = workingProxies[0]
-	proxyMutex.Unlock()
+	proxyMutex.RUnlock()
 
 	fmt.Printf("📌 Selected new active proxy: %s\n", currentProxy)
 	return currentProxy
@@ -206,14 +218,33 @@ func checkProxy(proxy string) bool {
 		Transport: &http.Transport{
 			Proxy: http.ProxyURL(proxyURL),
 		},
-		Timeout: 5 * time.Second,
+		Timeout: ProxyTestTimeout,
 	}
 
-	resp, err := client.Get(DeepInfraBaseURL + ModelsEndpoint)
+	testReq := map[string]interface{}{
+		"model": TestModelID,
+		"messages": []map[string]string{
+			{"role": "user", "content": "test"},
+		},
+		"max_tokens": 1,
+	}
+
+	reqBody, _ := json.Marshal(testReq)
+
+	req, err := http.NewRequest("POST", DeepInfraBaseURL+ChatEndpoint, bytes.NewReader(reqBody))
+	if err != nil {
+		return false
+	}
+
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Deepinfra-Source", "web-page")
+	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/92.0.4515.107 Safari/537.36")
+
+	resp, err := client.Do(req)
 	if err != nil {
 		return false
 	}
 	defer resp.Body.Close()
 
-	return resp.StatusCode == http.StatusOK
+	return resp.StatusCode == http.StatusOK || resp.StatusCode == http.StatusUnauthorized
 }
