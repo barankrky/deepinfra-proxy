@@ -273,6 +273,14 @@ func sendChatRequest(ctx context.Context, proxy, endpoint string, data []byte, i
 		if isStream {
 			fmt.Println("📶 Handling streaming response")
 			ok, streamErr := handleStreamResponse(w, resp)
+			if streamErr != nil {
+				errStr := strings.ToLower(streamErr.Error())
+				if strings.Contains(errStr, "context canceled") || strings.Contains(errStr, "broken pipe") || strings.Contains(errStr, "connection reset by peer") {
+					// Client disconnected after stream started; do not retry or write a second error response.
+					fmt.Printf("⚠️ Stream ended due to client disconnect: %v\n", streamErr)
+					return true, nil, false
+				}
+			}
 			return ok, streamErr, false
 		} else {
 			fmt.Println("📄 Handling normal response")
@@ -313,11 +321,26 @@ func handleStreamResponse(w http.ResponseWriter, resp *http.Response) (bool, err
 			continue
 		}
 
+		// Ignore SSE metadata/comments/heartbeat lines.
+		if strings.HasPrefix(line, ":") || strings.HasPrefix(line, "event:") || strings.HasPrefix(line, "id:") || strings.HasPrefix(line, "retry:") {
+			continue
+		}
+
 		var dataStr string
 		if strings.HasPrefix(line, "data: ") {
 			dataStr = strings.TrimPrefix(line, "data: ")
 		} else {
 			dataStr = line
+		}
+
+		dataStr = strings.TrimSpace(dataStr)
+		if dataStr == "" {
+			continue
+		}
+
+		// DeepInfra may send heartbeat as `data: : ping - ...`; not JSON, should be ignored.
+		if strings.HasPrefix(dataStr, ":") {
+			continue
 		}
 
 		if dataStr == "[DONE]" {
