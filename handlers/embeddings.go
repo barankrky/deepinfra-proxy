@@ -96,12 +96,15 @@ func EmbeddingsHandler(w http.ResponseWriter, r *http.Request) {
 
 			fmt.Printf("🌐 Attempt %d: Using proxy %s\n", i+1, proxy)
 
-			result, err, isProxyErr := sendEmbeddingRequest(ctx, proxy, services.DeepInfraBaseURL+"/embeddings", data, w)
+			result, err, isProxyErr, isRateLimit := sendEmbeddingRequest(ctx, proxy, services.DeepInfraBaseURL+"/embeddings", data, w)
 			if err != nil {
 				fmt.Printf("❌ Proxy attempt %d failed: %v\n", i+1, err)
 				if isProxyErr || isTimeoutError(err) {
 					services.MarkProxyFailed(proxy)
 					currentProxy = ""
+				} else if isRateLimit {
+					fmt.Println("⏳ Model busy, waiting before retry...")
+					time.Sleep(2 * time.Second)
 				}
 				lastErr = err
 				continue
@@ -117,10 +120,10 @@ func EmbeddingsHandler(w http.ResponseWriter, r *http.Request) {
 	utils.SendErrorResponse(w, "Unable to process the request after multiple attempts", "internal_error", http.StatusInternalServerError)
 }
 
-func sendEmbeddingRequest(ctx context.Context, proxy, endpoint string, data []byte, w http.ResponseWriter) (bool, error, bool) {
+func sendEmbeddingRequest(ctx context.Context, proxy, endpoint string, data []byte, w http.ResponseWriter) (bool, error, bool, bool) {
 	proxyURL, err := url.Parse("http://" + proxy)
 	if err != nil {
-		return false, err, true
+		return false, err, true, false
 	}
 
 	client := &http.Client{
@@ -132,7 +135,7 @@ func sendEmbeddingRequest(ctx context.Context, proxy, endpoint string, data []by
 
 	req, err := http.NewRequestWithContext(ctx, "POST", endpoint, bytes.NewBuffer(data))
 	if err != nil {
-		return false, err, false
+		return false, err, false, false
 	}
 
 	req.Header.Set("Content-Type", "application/json")
@@ -141,24 +144,25 @@ func sendEmbeddingRequest(ctx context.Context, proxy, endpoint string, data []by
 
 	resp, err := client.Do(req)
 	if err != nil {
-		return false, err, true
+		return false, err, true, false
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
-		isProxyErr := resp.StatusCode >= 500 || resp.StatusCode == 408 || resp.StatusCode == 429
-		return false, fmt.Errorf("API error (%d): %s", resp.StatusCode, string(body)), isProxyErr
+		isProxyErr := resp.StatusCode >= 500 || resp.StatusCode == 401 || resp.StatusCode == 403 || resp.StatusCode == 407 || resp.StatusCode == 408
+		isRateLimit := resp.StatusCode == 429
+		return false, fmt.Errorf("API error (%d): %s", resp.StatusCode, string(body)), isProxyErr, isRateLimit
 	}
 
 	bodyBytes, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return false, fmt.Errorf("failed to read response body: %v", err), false
+		return false, fmt.Errorf("failed to read response body: %v", err), false, false
 	}
 
 	var deepInfraResp map[string]interface{}
 	if err := json.Unmarshal(bodyBytes, &deepInfraResp); err != nil {
-		return false, fmt.Errorf("failed to parse response: %v", err), false
+		return false, fmt.Errorf("failed to parse response: %v", err), false, false
 	}
 
 	openAIResp := types.EmbeddingResponse{
@@ -225,7 +229,7 @@ func sendEmbeddingRequest(ctx context.Context, proxy, endpoint string, data []by
 	w.WriteHeader(http.StatusOK)
 	json.NewEncoder(w).Encode(openAIResp)
 
-	return true, nil, false
+	return true, nil, false, false
 }
 
 func CompletionsHandler(w http.ResponseWriter, r *http.Request) {
@@ -324,12 +328,15 @@ func CompletionsHandler(w http.ResponseWriter, r *http.Request) {
 
 			fmt.Printf("🌐 Attempt %d: Using proxy %s\n", i+1, proxy)
 
-			result, err, isProxyErr := sendCompletionRequest(ctx, proxy, services.DeepInfraBaseURL+services.ChatEndpoint, data, compReq.Stream, w)
+			result, err, isProxyErr, isRateLimit := sendCompletionRequest(ctx, proxy, services.DeepInfraBaseURL+services.ChatEndpoint, data, compReq.Stream, w)
 			if err != nil {
 				fmt.Printf("❌ Proxy attempt %d failed: %v\n", i+1, err)
 				if isProxyErr || isTimeoutError(err) {
 					services.MarkProxyFailed(proxy)
 					currentProxy = ""
+				} else if isRateLimit {
+					fmt.Println("⏳ Model busy, waiting before retry...")
+					time.Sleep(2 * time.Second)
 				}
 				lastErr = err
 				continue
@@ -368,10 +375,10 @@ func promptToMessages(prompt interface{}) []types.ChatMessage {
 	return messages
 }
 
-func sendCompletionRequest(ctx context.Context, proxy, endpoint string, data []byte, isStream bool, w http.ResponseWriter) (bool, error, bool) {
+func sendCompletionRequest(ctx context.Context, proxy, endpoint string, data []byte, isStream bool, w http.ResponseWriter) (bool, error, bool, bool) {
 	proxyURL, err := url.Parse("http://" + proxy)
 	if err != nil {
-		return false, err, true
+		return false, err, true, false
 	}
 
 	client := &http.Client{
@@ -383,7 +390,7 @@ func sendCompletionRequest(ctx context.Context, proxy, endpoint string, data []b
 
 	req, err := http.NewRequestWithContext(ctx, "POST", endpoint, bytes.NewBuffer(data))
 	if err != nil {
-		return false, err, false
+		return false, err, false, false
 	}
 
 	req.Header.Set("Content-Type", "application/json")
@@ -392,22 +399,23 @@ func sendCompletionRequest(ctx context.Context, proxy, endpoint string, data []b
 
 	resp, err := client.Do(req)
 	if err != nil {
-		return false, err, true
+		return false, err, true, false
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
-		isProxyErr := resp.StatusCode >= 500 || resp.StatusCode == 408 || resp.StatusCode == 429
-		return false, fmt.Errorf("API error (%d): %s", resp.StatusCode, string(body)), isProxyErr
+		isProxyErr := resp.StatusCode >= 500 || resp.StatusCode == 401 || resp.StatusCode == 403 || resp.StatusCode == 407 || resp.StatusCode == 408
+		isRateLimit := resp.StatusCode == 429
+		return false, fmt.Errorf("API error (%d): %s", resp.StatusCode, string(body)), isProxyErr, isRateLimit
 	}
 
 	if isStream {
 		ok, streamErr := handleCompletionStreamResponse(w, resp)
-		return ok, streamErr, false
+		return ok, streamErr, false, false
 	}
 	ok, normalErr := handleCompletionNormalResponse(w, resp)
-	return ok, normalErr, false
+	return ok, normalErr, false, false
 }
 
 func handleCompletionStreamResponse(w http.ResponseWriter, resp *http.Response) (bool, error) {

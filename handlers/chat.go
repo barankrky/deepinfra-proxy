@@ -174,7 +174,11 @@ func ChatCompletionsHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	debugPayload("Forwarded request body", data)
 
-	ctx, cancel := context.WithTimeout(r.Context(), 90*time.Second)
+	requestTimeout := 90 * time.Second
+	if chatReq.Stream {
+		requestTimeout = 10 * time.Minute
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), requestTimeout)
 	defer cancel()
 
 	success := false
@@ -207,12 +211,15 @@ func ChatCompletionsHandler(w http.ResponseWriter, r *http.Request) {
 
 			fmt.Printf("🌐 Attempt %d: Using proxy %s\n", i+1, proxy)
 
-			result, err, isProxyErr := sendChatRequest(ctx, proxy, services.DeepInfraBaseURL+services.ChatEndpoint, data, chatReq.Stream, w)
+			result, err, isProxyErr, isRateLimit := sendChatRequest(ctx, proxy, services.DeepInfraBaseURL+services.ChatEndpoint, data, chatReq.Stream, w)
 			if err != nil {
 				fmt.Printf("❌ Proxy attempt %d failed: %v\n", i+1, err)
 				if isProxyErr || isTimeoutError(err) {
 					services.MarkProxyFailed(proxy)
 					currentProxy = ""
+				} else if isRateLimit {
+					fmt.Println("⏳ Model busy, waiting before retry...")
+					time.Sleep(2 * time.Second)
 				}
 				lastErr = err
 				continue
@@ -238,22 +245,24 @@ func ChatCompletionsHandler(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func sendChatRequest(ctx context.Context, proxy, endpoint string, data []byte, isStream bool, w http.ResponseWriter) (bool, error, bool) {
+func sendChatRequest(ctx context.Context, proxy, endpoint string, data []byte, isStream bool, w http.ResponseWriter) (bool, error, bool, bool) {
 	proxyURL, err := url.Parse("http://" + proxy)
 	if err != nil {
-		return false, err, true
+		return false, err, true, false
 	}
 
 	client := &http.Client{
 		Transport: &http.Transport{
 			Proxy: http.ProxyURL(proxyURL),
 		},
-		Timeout: 60 * time.Second,
+	}
+	if !isStream {
+		client.Timeout = 60 * time.Second
 	}
 
 	req, err := http.NewRequestWithContext(ctx, "POST", endpoint, bytes.NewBuffer(data))
 	if err != nil {
-		return false, err, false
+		return false, err, false, false
 	}
 
 	req.Header.Set("Content-Type", "application/json")
@@ -263,7 +272,7 @@ func sendChatRequest(ctx context.Context, proxy, endpoint string, data []byte, i
 	fmt.Printf("📡 Sending request to %s via proxy %s\n", endpoint, proxy)
 	resp, err := client.Do(req)
 	if err != nil {
-		return false, err, true
+		return false, err, true, false
 	}
 	defer resp.Body.Close()
 
@@ -272,47 +281,66 @@ func sendChatRequest(ctx context.Context, proxy, endpoint string, data []byte, i
 	if resp.StatusCode == http.StatusOK {
 		if isStream {
 			fmt.Println("📶 Handling streaming response")
-			ok, streamErr := handleStreamResponse(w, resp)
+			ok, streamErr, streamStarted := handleStreamResponse(w, resp)
 			if streamErr != nil {
+				if streamStarted {
+					// Response has already started; retrying would cause duplicate headers/chunks.
+					fmt.Printf("⚠️ Stream ended after response started: %v\n", streamErr)
+					return true, nil, false, false
+				}
+
 				errStr := strings.ToLower(streamErr.Error())
 				if strings.Contains(errStr, "context canceled") || strings.Contains(errStr, "broken pipe") || strings.Contains(errStr, "connection reset by peer") {
-					// Client disconnected after stream started; do not retry or write a second error response.
+					// Client disconnected before stream started; avoid retries.
 					fmt.Printf("⚠️ Stream ended due to client disconnect: %v\n", streamErr)
-					return true, nil, false
+					return true, nil, false, false
 				}
 			}
-			return ok, streamErr, false
+			return ok, streamErr, false, false
 		} else {
 			fmt.Println("📄 Handling normal response")
 			ok, normalErr := handleNormalResponse(w, resp)
-			return ok, normalErr, false
+			return ok, normalErr, false, false
 		}
 	}
 
 	body, _ := io.ReadAll(resp.Body)
 	debugPayload("Upstream error body", body)
 
-	isProxyErr := resp.StatusCode >= 500 || resp.StatusCode == 408 || resp.StatusCode == 429
-	return false, fmt.Errorf("API error (%d): %s", resp.StatusCode, string(body)), isProxyErr
+	// Proxy errors: status codes that indicate the proxy itself is broken/unusable.
+	//   401/403/407 = authentication issues (proxy can't authenticate to the API)
+	//   408 = request timeout (proxy might be slow/dead)
+	//   5xx = server errors (proxy might be causing issues)
+	// NOT proxy errors:
+	//   429 = rate limit (server is busy, proxy is fine — just retry later)
+	isProxyErr := resp.StatusCode >= 500 || resp.StatusCode == 401 || resp.StatusCode == 403 || resp.StatusCode == 407 || resp.StatusCode == 408
+	isRateLimit := resp.StatusCode == 429
+	return false, fmt.Errorf("API error (%d): %s", resp.StatusCode, string(body)), isProxyErr, isRateLimit
 }
 
-func handleStreamResponse(w http.ResponseWriter, resp *http.Response) (bool, error) {
-	w.Header().Set("Content-Type", "text/event-stream")
-	w.Header().Set("Cache-Control", "no-cache")
-	w.Header().Set("Connection", "keep-alive")
-	w.WriteHeader(http.StatusOK)
-
+func handleStreamResponse(w http.ResponseWriter, resp *http.Response) (bool, error, bool) {
 	responseID := generateID("chatcmpl-")
 	modelName := ""
 	scanner := bufio.NewScanner(resp.Body)
-	var buf bytes.Buffer
 	scanner.Buffer(make([]byte, 64*1024), 1024*1024)
 	chunkCount := 0
 	doneSent := false
+	headersWritten := false
 
 	flusher, ok := w.(http.Flusher)
 	if !ok {
-		return false, fmt.Errorf("response writer does not support flushing")
+		return false, fmt.Errorf("response writer does not support flushing"), false
+	}
+
+	ensureStreamHeaders := func() {
+		if headersWritten {
+			return
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.Header().Set("Cache-Control", "no-cache")
+		w.Header().Set("Connection", "keep-alive")
+		w.WriteHeader(http.StatusOK)
+		headersWritten = true
 	}
 
 	for scanner.Scan() {
@@ -345,6 +373,7 @@ func handleStreamResponse(w http.ResponseWriter, resp *http.Response) (bool, err
 
 		if dataStr == "[DONE]" {
 			debugText("Stream inbound chunk", dataStr)
+			ensureStreamHeaders()
 			fmt.Fprintf(w, "data: [DONE]\n\n")
 			flusher.Flush()
 			chunkCount++
@@ -358,6 +387,7 @@ func handleStreamResponse(w http.ResponseWriter, resp *http.Response) (bool, err
 
 		var streamChunk map[string]interface{}
 		if err := json.Unmarshal([]byte(dataStr), &streamChunk); err != nil {
+			ensureStreamHeaders()
 			fmt.Fprintf(w, "data: %s\n\n", dataStr)
 			flusher.Flush()
 			chunkCount++
@@ -469,6 +499,7 @@ func handleStreamResponse(w http.ResponseWriter, resp *http.Response) (bool, err
 		}
 
 		chunkBytes, err := json.Marshal(normalizedChunk)
+		ensureStreamHeaders()
 		if err != nil {
 			fmt.Fprintf(w, "data: %s\n\n", dataStr)
 		} else {
@@ -481,20 +512,30 @@ func handleStreamResponse(w http.ResponseWriter, resp *http.Response) (bool, err
 		chunkCount++
 	}
 
+	if err := scanner.Err(); err != nil {
+		fmt.Printf("❌ Stream error: %v\n", err)
+		if headersWritten && !doneSent {
+			fmt.Fprintf(w, "data: [DONE]\n\n")
+			flusher.Flush()
+			chunkCount++
+			doneSent = true
+		}
+		return false, err, headersWritten
+	}
+
 	if !doneSent {
+		ensureStreamHeaders()
 		fmt.Fprintf(w, "data: [DONE]\n\n")
 		flusher.Flush()
 		chunkCount++
 	}
 
-	if err := scanner.Err(); err != nil {
-		fmt.Printf("❌ Stream error: %v\n", err)
-		return false, err
+	if !headersWritten {
+		return false, fmt.Errorf("upstream stream ended without chunks"), false
 	}
 
 	fmt.Printf("✅ Stream complete, sent %d chunks\n", chunkCount)
-	buf.Reset()
-	return true, nil
+	return true, nil, true
 }
 
 func handleNormalResponse(w http.ResponseWriter, resp *http.Response) (bool, error) {
